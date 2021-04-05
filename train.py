@@ -50,6 +50,7 @@ def setup_training_loop_kwargs(
     kimg       = None, # Override training duration: <int>
     nkimg      = None, # Override starting count
     batch      = None, # Override batch size: <int>
+    cfg_map    = None, # Override config map: <int>, default = depends on cfg
 
     # Discriminator augmentation.
     aug        = None, # Augmentation mode: 'ada' (default), 'noaug', 'fixed'
@@ -65,6 +66,7 @@ def setup_training_loop_kwargs(
     # Performance options (not included in desc).
     fp32       = None, # Disable mixed-precision training: <bool>, default = False
     nhwc       = None, # Use NHWC memory format with FP16: <bool>, default = False
+    allow_tf32 = None, # Allow PyTorch to use TF32 for matmul and convolutions: <bool>, default = False
     nobench    = None, # Disable cuDNN benchmarking: <bool>, default = False
     workers    = None, # Override number of DataLoader workers: <int>, default = 3
 ):
@@ -181,7 +183,7 @@ def setup_training_loop_kwargs(
 
     assert cfg in cfg_specs
     spec = dnnlib.EasyDict(cfg_specs[cfg])
-    if cfg == 'auto':
+    if cfg.startswith('auto'):
         desc += f'{gpus:d}'
         spec.ref_gpus = gpus
         res = args.training_set_kwargs.resolution
@@ -215,7 +217,14 @@ def setup_training_loop_kwargs(
     args.ema_kimg = spec.ema
     args.ema_rampup = spec.ramp
 
-    if cfg == 'cifar':
+    if cifar_tune is None:
+        cifar_tune = False
+    else:
+        assert isinstance(cifar_tune, bool)
+        if cifar_tune:
+            desc += '-tuning'
+
+    if cifar_tune or cfg == 'cifar':
         args.loss_kwargs.pl_weight = 0 # disable path length regularization
         args.loss_kwargs.style_mixing_prob = 0 # disable style mixing
         args.D_kwargs.architecture = 'orig' # disable residual skip connections
@@ -246,6 +255,12 @@ def setup_training_loop_kwargs(
         args.batch_size = batch
         args.batch_gpu = batch // gpus
 
+    if cfg_map is not None:
+        assert isinstance(cfg_map, int)
+        if not cfg_map >= 1:
+            raise UserError('--cfg_map must be at least 1')
+        args.G_kwargs.mapping_kwargs.num_layers = cfg_map
+
     # ---------------------------------------------------
     # Discriminator augmentation: aug, p, target, augpipe
     # ---------------------------------------------------
@@ -271,8 +286,8 @@ def setup_training_loop_kwargs(
 
     if p is not None:
         assert isinstance(p, float)
-        if aug != 'fixed':
-            raise UserError('--p can only be specified with --aug=fixed')
+        if resume != 'latest' and aug != 'fixed':
+            raise UserError('--p can only be specified with --resume=latest or --aug=fixed')
         if not 0 <= p <= 1:
             raise UserError('--p must be between 0 and 1')
         desc += f'-p{p:g}'
@@ -375,6 +390,12 @@ def setup_training_loop_kwargs(
     if nobench:
         args.cudnn_benchmark = False
 
+    if allow_tf32 is None:
+        allow_tf32 = False
+    assert isinstance(allow_tf32, bool)
+    if allow_tf32:
+        args.allow_tf32 = True
+
     if workers is not None:
         assert isinstance(workers, int)
         if not workers >= 1:
@@ -445,6 +466,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--kimg', help='Override training duration', type=int, metavar='INT')
 @click.option('--nkimg',  help='Override starting count', type=int, metavar='INT')
 @click.option('--batch', help='Override batch size', type=int, metavar='INT')
+@click.option('--cfg_map', help='Override config map', type=int, metavar='INT')
 
 # Discriminator augmentation.
 @click.option('--aug', help='Augmentation mode [default: ada]', type=click.Choice(['noaug', 'ada', 'fixed']))
@@ -461,6 +483,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--fp32', help='Disable mixed-precision training', type=bool, metavar='BOOL')
 @click.option('--nhwc', help='Use NHWC memory format with FP16', type=bool, metavar='BOOL')
 @click.option('--nobench', help='Disable cuDNN benchmarking', type=bool, metavar='BOOL')
+@click.option('--allow-tf32', help='Allow PyTorch to use TF32 internally', type=bool, metavar='BOOL')
 @click.option('--workers', help='Override number of DataLoader workers', type=int, metavar='INT')
 
 def main(ctx, outdir, dry_run, **config_kwargs):

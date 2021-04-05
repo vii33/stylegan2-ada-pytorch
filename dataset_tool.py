@@ -13,6 +13,7 @@ import os
 import pickle
 import sys
 import tarfile
+import gzip
 import zipfile
 from pathlib import Path
 from typing import Callable, Optional, Tuple, Union
@@ -48,7 +49,7 @@ def is_image_ext(fname: Union[str, Path]) -> bool:
 
 #----------------------------------------------------------------------------
 
-def open_image_folder(source_dir, *, max_images: Optional[int]):
+def open_image_folder(source_dir, *, max_images: Optional[int], img_format: str):
     input_images = [str(f) for f in sorted(Path(source_dir).rglob('*')) if is_image_ext(f) and os.path.isfile(f)]
 
     # Load labels.
@@ -68,7 +69,10 @@ def open_image_folder(source_dir, *, max_images: Optional[int]):
         for idx, fname in enumerate(input_images):
             arch_fname = os.path.relpath(fname, source_dir)
             arch_fname = arch_fname.replace('\\', '/')
-            img = np.array(PIL.Image.open(fname))
+            img = PIL.Image.open(fname)
+            if img_format != 'keep':
+                img = img.convert(img_format)
+            img = np.array(img)
             yield dict(img=img, label=labels.get(arch_fname))
             if idx >= max_idx-1:
                 break
@@ -76,7 +80,7 @@ def open_image_folder(source_dir, *, max_images: Optional[int]):
 
 #----------------------------------------------------------------------------
 
-def open_image_zip(source, *, max_images: Optional[int]):
+def open_image_zip(source, *, max_images: Optional[int], img_format: str):
     with zipfile.ZipFile(source, mode='r') as z:
         input_images = [str(f) for f in sorted(z.namelist()) if is_image_ext(f)]
 
@@ -97,6 +101,8 @@ def open_image_zip(source, *, max_images: Optional[int]):
             for idx, fname in enumerate(input_images):
                 with z.open(fname, 'r') as file:
                     img = PIL.Image.open(file) # type: ignore
+                    if img_format != 'keep':
+                        img = img.convert(img_format)
                     img = np.array(img)
                 yield dict(img=img, label=labels.get(fname))
                 if idx >= max_idx-1:
@@ -165,6 +171,36 @@ def open_cifar10(tarball: str, *, max_images: Optional[int]):
 
 #----------------------------------------------------------------------------
 
+def open_mnist(images_gz: str, *, max_images: Optional[int]):
+    labels_gz = images_gz.replace('-images-idx3-ubyte.gz', '-labels-idx1-ubyte.gz')
+    assert labels_gz != images_gz
+    images = []
+    labels = []
+
+    with gzip.open(images_gz, 'rb') as f:
+        images = np.frombuffer(f.read(), np.uint8, offset=16)
+    with gzip.open(labels_gz, 'rb') as f:
+        labels = np.frombuffer(f.read(), np.uint8, offset=8)
+
+    images = images.reshape(-1, 28, 28)
+    images = np.pad(images, [(0,0), (2,2), (2,2)], 'constant', constant_values=0)
+    assert images.shape == (60000, 32, 32) and images.dtype == np.uint8
+    assert labels.shape == (60000,) and labels.dtype == np.uint8
+    assert np.min(images) == 0 and np.max(images) == 255
+    assert np.min(labels) == 0 and np.max(labels) == 9
+
+    max_idx = maybe_min(len(images), max_images)
+
+    def iterate_images():
+        for idx, img in enumerate(images):
+            yield dict(img=img, label=int(labels[idx]))
+            if idx >= max_idx-1:
+                break
+
+    return max_idx, iterate_images()
+
+#----------------------------------------------------------------------------
+
 def make_transform(
     transform: Optional[str],
     output_width: Optional[int],
@@ -218,18 +254,19 @@ def make_transform(
 
 #----------------------------------------------------------------------------
 
-def open_dataset(source, *, max_images: Optional[int]):
+def open_dataset(source, *, max_images: Optional[int], img_format: str):
     if os.path.isdir(source):
         if source.rstrip('/').endswith('_lmdb'):
             return open_lmdb(source, max_images=max_images)
         else:
-            return open_image_folder(source, max_images=max_images)
+            return open_image_folder(source, max_images=max_images, img_format=img_format)
     elif os.path.isfile(source):
-        if source.endswith('cifar-10-python.tar.gz'):
+        if os.path.basename(source) == 'cifar-10-python.tar.gz':
             return open_cifar10(source, max_images=max_images)
-        ext = file_ext(source)
-        if ext == 'zip':
-            return open_image_zip(source, max_images=max_images)
+        elif os.path.basename(source) == 'train-images-idx3-ubyte.gz':
+            return open_mnist(source, max_images=max_images)
+        elif file_ext(source) == 'zip':
+            return open_image_zip(source, max_images=max_images, img_format=img_format)
         else:
             assert False, 'unknown archive type'
     else:
@@ -278,6 +315,7 @@ def open_dest(dest: str) -> Tuple[str, Callable[[str, Union[bytes, str]], None],
 @click.option('--transform', help='Input crop/resize mode', type=click.Choice(['center-crop', 'center-crop-wide']))
 @click.option('--width', help='Output width', type=int)
 @click.option('--height', help='Output height', type=int)
+@click.option('--img-format', help='Forces images to be loaded as a specific file format.', type=click.Choice(['keep', 'L', 'RGB']), default='keep', show_default=True)
 def convert_dataset(
     ctx: click.Context,
     source: str,
@@ -286,26 +324,48 @@ def convert_dataset(
     transform: Optional[str],
     resize_filter: str,
     width: Optional[int],
-    height: Optional[int]
+    height: Optional[int],
+    img_format: str
 ):
     """Convert an image dataset into a dataset archive usable with StyleGAN2 ADA PyTorch.
 
     The input dataset format is guessed from the --source argument:
 
     \b
-    --source *_lmdb/                - Load LSUN dataset
-    --source cifar-10-python.tar.gz - Load CIFAR-10 dataset
-    --source path/                  - Recursively load all images from path/
-    --source dataset.zip            - Recursively load all images from dataset.zip
+    --source *_lmdb/                    Load LSUN dataset
+    --source cifar-10-python.tar.gz     Load CIFAR-10 dataset
+    --source train-images-idx3-ubyte.gz Load MNIST dataset
+    --source path/                      Recursively load all images from path/
+    --source dataset.zip                Recursively load all images from dataset.zip
 
-    The output dataset format can be either an image folder or a zip archive.  Specifying
-    the output format and path:
+    Specifying the output format and path:
 
     \b
-    --dest /path/to/dir             - Save output files under /path/to/dir
-    --dest /path/to/dataset.zip     - Save output files into /path/to/dataset.zip archive
+    --dest /path/to/dir                 Save output files under /path/to/dir
+    --dest /path/to/dataset.zip         Save output files into /path/to/dataset.zip
+
+    The output dataset format can be either an image folder or an uncompressed zip archive.
+    Zip archives makes it easier to move datasets around file servers and clusters, and may
+    offer better training performance on network file systems.
 
     Images within the dataset archive will be stored as uncompressed PNG.
+    Uncompresed PNGs can be efficiently decoded in the training loop.
+
+    Class labels are stored in a file called 'dataset.json' that is stored at the
+    dataset root folder.  This file has the following structure:
+
+    \b
+    {
+        "labels": [
+            ["00000/img00000000.png",6],
+            ["00000/img00000001.png",9],
+            ... repeated for every image in the datase
+            ["00049/img00049999.png",1]
+        ]
+    }
+
+    If the 'dataset.json' file cannot be found, the dataset is interpreted as
+    not containing class labels.
 
     Image scale/crop and resolution requirements:
 
@@ -324,6 +384,11 @@ def convert_dataset(
     \b
     python dataset_tool.py --source LSUN/raw/cat_lmdb --dest /tmp/lsun_cat \\
         --transform=center-crop-wide --width 512 --height=384
+    
+    For custom image folders and image zip files, the image format can be force converted to
+    a specific format on load by using --img-format=L for grayscale or --img-format=RGB
+    for full color images. Defaults to --img-format=keep which keeps the current image
+    color format.
     """
 
     PIL.Image.init() # type: ignore
@@ -331,7 +396,7 @@ def convert_dataset(
     if dest == '':
         ctx.fail('--dest output filename or directory must not be an empty string')
 
-    num_files, input_iter = open_dataset(source, max_images=max_images)
+    num_files, input_iter = open_dataset(source, max_images=max_images, img_format=img_format)
     archive_root_dir, save_bytes, close_dest = open_dest(dest)
 
     transform_image = make_transform(transform, width, height, resize_filter)

@@ -23,6 +23,7 @@ from torch_utils.ops import grid_sample_gradfix
 
 import legacy
 from metrics import metric_main
+from training import misc as tmisc
 
 #----------------------------------------------------------------------------
 
@@ -116,6 +117,7 @@ def training_loop(
     network_snapshot_ticks  = 50,       # How often to save network snapshots? None = disable.
     resume_pkl              = None,     # Network pickle to resume training from.
     cudnn_benchmark         = True,     # Enable torch.backends.cudnn.benchmark?
+    allow_tf32              = False,    # Enable torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnn.allow_tf32?
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
@@ -125,6 +127,8 @@ def training_loop(
     np.random.seed(random_seed * num_gpus + rank)
     torch.manual_seed(random_seed * num_gpus + rank)
     torch.backends.cudnn.benchmark = cudnn_benchmark    # Improves training speed.
+    torch.backends.cuda.matmul.allow_tf32 = allow_tf32  # Allow PyTorch to internally use tf32 for matmul
+    torch.backends.cudnn.allow_tf32 = allow_tf32        # Allow PyTorch to internally use tf32 for convolutions
     conv2d_gradfix.enabled = True                       # Improves training speed.
     grid_sample_gradfix.enabled = True                  # Avoids errors with the augmentation pipe.
 
@@ -150,6 +154,20 @@ def training_loop(
     G_ema = copy.deepcopy(G).eval()
 
     # Resume from existing pickle.
+    if resume_pkl == 'latest':
+        out_dir = tmisc.get_parent_dir(run_dir)
+        resume_pkl = tmisc.locate_latest_pkl(out_dir)
+
+    resume_kimg = tmisc.parse_kimg_from_network_name(resume_pkl)
+    if resume_kimg > 0:
+        print(f'Resuming from kimg = {resume_kimg}')
+
+    if ada_target is not None and augment_p == 0:
+        # Overwrite augment_p only if the augmentation probability is not fixed by the user
+        augment_p = tmisc.parse_augment_p_from_log(resume_pkl)
+        if augment_p > 0:
+            print(f'Resuming with augment_p = {augment_p}')
+
     if (resume_pkl is not None) and (rank == 0):
         print(f'Resuming from "{resume_pkl}"')
         with dnnlib.util.open_url(resume_pkl) as f:
@@ -243,14 +261,15 @@ def training_loop(
     if rank == 0:
         print(f'Training for {total_kimg} kimg...')
         print()
-    cur_nimg = nimg
+    cur_nimg = int(resume_kimg * 1000)
+    # cur_nimg = nimg # alternative?
     cur_tick = 0
     tick_start_nimg = cur_nimg
     tick_start_time = time.time()
     maintenance_time = tick_start_time - start_time
     batch_idx = 0
     if progress_fn is not None:
-        progress_fn(0, total_kimg)
+        progress_fn(int(resume_kimg), total_kimg)
     while True:
 
         # Fetch training data.

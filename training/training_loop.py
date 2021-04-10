@@ -29,8 +29,9 @@ from training import misc as tmisc
 
 def setup_snapshot_image_grid(training_set, random_seed=0):
     rnd = np.random.RandomState(random_seed)
-    gw = np.clip(7680 // training_set.image_shape[2], 7, 32)
-    gh = np.clip(4320 // training_set.image_shape[1], 4, 32)
+    # Determine grid width & height
+    gw = np.clip(7680 // training_set.image_shape[2], 7, 14)  # cur, min, max=32
+    gh = np.clip(4320 // training_set.image_shape[1], 4, 8)  # cur, min, max=32
 
     # No labels => show random subset of training samples.
     if not training_set.has_labels:
@@ -118,7 +119,7 @@ def training_loop(
     resume_pkl              = None,     # Network pickle to resume training from.
     cudnn_benchmark         = True,     # Enable torch.backends.cudnn.benchmark?
     allow_tf32              = False,    # Enable torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnn.allow_tf32?
-    abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
+    abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks. Has to return True/False
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
     # Initialize.
@@ -255,14 +256,14 @@ def training_loop(
             import torch.utils.tensorboard as tensorboard
             stats_tfevents = tensorboard.SummaryWriter(run_dir)
         except ImportError as err:
-            print('Skipping tfevents export:', err)
+            print('ERR - Skipping tfevents export:', err)
 
     # Train.
     if rank == 0:
         print(f'Training for {total_kimg} kimg...')
         print()
     cur_nimg = int(resume_kimg * 1000)
-    # cur_nimg = nimg # alternative?
+    # cur_nimg = nimg  # dvschultz alternative?
     cur_tick = 0
     tick_start_nimg = cur_nimg
     tick_start_time = time.time()
@@ -270,6 +271,8 @@ def training_loop(
     batch_idx = 0
     if progress_fn is not None:
         progress_fn(int(resume_kimg), total_kimg)
+
+
     while True:
 
         # Fetch training data.
@@ -344,9 +347,9 @@ def training_loop(
         fields += [f"time {dnnlib.util.format_time(training_stats.report0('Timing/total_sec', tick_end_time - start_time)):<12s}"]
         fields += [f"sec/tick {training_stats.report0('Timing/sec_per_tick', tick_end_time - tick_start_time):<7.1f}"]
         fields += [f"sec/kimg {training_stats.report0('Timing/sec_per_kimg', (tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg) * 1e3):<7.2f}"]
-        fields += [f"maintenance {training_stats.report0('Timing/maintenance_sec', maintenance_time):<6.1f}"]
-        fields += [f"cpumem {training_stats.report0('Resources/cpu_mem_gb', psutil.Process(os.getpid()).memory_info().rss / 2**30):<6.2f}"]
-        fields += [f"gpumem {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
+        fields += [f"maintenance_time {training_stats.report0('Timing/maintenance_sec', maintenance_time):<6.1f}"]
+        fields += [f"cpu-mem {training_stats.report0('Resources/cpu_mem_gb', psutil.Process(os.getpid()).memory_info().rss / 2**30):<6.2f}"]
+        fields += [f"gpu-mem {training_stats.report0('Resources/peak_gpu_mem_gb', torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}"]
         torch.cuda.reset_peak_memory_stats()
         fields += [f"augment {training_stats.report0('Progress/augment', float(augment_pipe.p.cpu()) if augment_pipe is not None else 0):.3f}"]
         training_stats.report0('Timing/total_hours', (tick_end_time - start_time) / (60 * 60))

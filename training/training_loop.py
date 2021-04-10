@@ -108,8 +108,8 @@ def training_loop(
     G_reg_interval          = 4,        # How often to perform regularization for G? None = disable lazy regularization.
     D_reg_interval          = 16,       # How often to perform regularization for D? None = disable lazy regularization.
     augment_p               = 0,        # Initial value of augmentation probability.
-    ada_target              = None,     # ADA target value. None = fixed p.
-    ada_interval            = 4,        # How often to perform ADA adjustment?
+    ada_target              = None,     # ADA target value (r_t). None = fixed p (Paper: inferior). Default Param: 0.6
+    ada_interval            = 4,        # How often to perform ADA adjustment. Default: every 4 MB. This parameter is not sensitive -> Leave.
     ada_kimg                = 500,      # ADA adjustment speed, measured in how many kimg it takes for p to increase/decrease by one unit.
     nimg                    = 0,        # current image count
     total_kimg              = 25000,    # Total length of the training, measured in thousands of real images.
@@ -260,7 +260,7 @@ def training_loop(
 
     # Train.
     if rank == 0:
-        print(f'Training for {total_kimg} kimg...')
+        print(f'\n--------------------\nTraining for {total_kimg} kimg...\n--------------------')
         print()
     cur_nimg = int(resume_kimg * 1000)
     # cur_nimg = nimg  # dvschultz alternative?

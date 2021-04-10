@@ -35,6 +35,7 @@ def setup_training_loop_kwargs(
     snap       = None, # Snapshot interval: <int>, default = 50 ticks
     metrics    = None, # List of metric names: [], ['fid50k_full'] (default), ...
     seed       = None, # Random seed: <int>, default = 0
+    verbose    = None, # Reduced the printed output e.g. network architecture
 
     # Dataset.
     data       = None, # Training dataset (required): <path>
@@ -103,6 +104,11 @@ def setup_training_loop_kwargs(
         seed = 0
     assert isinstance(seed, int)
     args.random_seed = seed
+
+    if verbose is None:
+        verbose = True
+    assert isinstance(verbose, bool)
+    args.verbose = verbose
 
     # -----------------------------------
     # Dataset: data, cond, subset, mirror
@@ -452,6 +458,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--metrics', help='Comma-separated list or "none" [default: fid50k_full]', type=CommaSeparatedList())
 @click.option('--seed', help='Random seed [default: 0]', type=int, metavar='INT')
 @click.option('-n', '--dry-run', help='Print training options and exit', is_flag=True)
+@click.option('--verbose', help='Reduced the printed output e.g. network architecture', is_flag=True)
 
 # Dataset.
 @click.option('--data', help='Training data (directory or zip)', metavar='PATH', required=True)

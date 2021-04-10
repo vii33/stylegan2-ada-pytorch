@@ -121,6 +121,7 @@ def training_loop(
     allow_tf32              = False,    # Enable torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnn.allow_tf32?
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks. Has to return True/False
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
+    verbose                 = True,     # Reduce the printed output e.g. network architecture
 ):
     # Initialize.
     start_time = time.time()
@@ -177,7 +178,7 @@ def training_loop(
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
     # Print network summary tables.
-    if rank == 0:
+    if rank == 0 and verbose == True:
         z = torch.empty([batch_gpu, G.z_dim], device=device)
         c = torch.empty([batch_gpu, G.c_dim], device=device)
         img = misc.print_module_summary(G, [z, c])

@@ -1,7 +1,6 @@
 import click
 
 @click.command()
-#@click.pass_context
 
 @click.option('--img_width', help='Train images width', required=True, type=click.INT)
 @click.option('--img_height', help='Train images height', required=True, type=click.INT)
